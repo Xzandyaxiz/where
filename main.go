@@ -4,19 +4,19 @@ import (
   "fmt"; "os"; "strings"
   "github.com/nsf/termbox-go"
   "path/filepath"; "strconv"
-  "syscall"
 )
 
-type Cursor struct {
+const LightGray = 251
+
+type Global struct {
   matches []string
+  match_size []int64
   x int; text string
   select_mode bool
   select_index int
 }
 
-func input_mgr(cursor *Cursor, event termbox.Event) {
-  _, height := termbox.Size()
-
+func input_mgr(glob *Global, event termbox.Event) {
   switch event.Type {
   case termbox.EventKey:
     if event.Key == termbox.KeyEsc {
@@ -24,56 +24,56 @@ func input_mgr(cursor *Cursor, event termbox.Event) {
       os.Exit(0)
     }
 
-    if !cursor.select_mode {
+    if !glob.select_mode {
       if event.Ch != 0 {
-        cursor.text += string(event.Ch)
+        glob.text += string(event.Ch)
       }
 
       if event.Key == termbox.KeySpace {
-        cursor.text += " "
+        glob.text += " "
       }
   
       if event.Key == termbox.KeyBackspace2 {
-        if len(cursor.text) > 0 {
-          cursor.text = cursor.text[:len(cursor.text) - 1]
+        if len(glob.text) > 0 {
+          glob.text = glob.text[:len(glob.text) - 1]
         }
       }
     } else {
       if event.Key == termbox.KeyArrowDown {
-        if cursor.select_index < height - 5 {
-          cursor.select_index ++
+        if glob.select_index < len(glob.matches) - 1 {
+          glob.select_index ++
         }
       }
 
       if event.Key == termbox.KeyArrowUp {
-        if cursor.select_index > 0 {
-          cursor.select_index --
+        if glob.select_index > 0 {
+          glob.select_index --
         }
       }
 
       if event.Key == termbox.KeyEnter {
-        termbox.Close()
-
-        syscall.Chdir(cursor.matches[cursor.select_index])
-        os.Exit(0)
+        // nothing here yet...
       }
     }
 
     if event.Key == termbox.KeyTab {
-      if cursor.select_mode == false {
-        cursor.select_mode = true
+      if glob.select_mode == false {
+        glob.select_mode = true
       } else {
-        cursor.select_mode = false
-        cursor.text = ""
+        glob.select_mode = false
+        glob.select_index = 0
+        glob.text = ""
       }
     }
   }
 }
 
-func draw_matches(cursor *Cursor, line_nums bool) {
+func draw_matches(glob *Global, line_nums bool) {
   var offset int = 2
+  width, _ := termbox.Size()
 
-  for i, str := range cursor.matches {
+  for i, str := range glob.matches {
+    // Draw line nums if true
     if line_nums {
       rownum := strconv.Itoa(i)
       if i >= 10 {
@@ -85,22 +85,38 @@ func draw_matches(cursor *Cursor, line_nums bool) {
       }
     }
     
+    bytes := strconv.Itoa(int(glob.match_size[i]))
+    match_size_startpos := width / 2 - len(bytes)
+
+    // Print the match at the correct level
     for j, char := range str {
-      termbox.SetCell(j+4, i+1, char, termbox.ColorDefault, termbox.ColorDefault)
+      if j+7 >= match_size_startpos {
+        break
+      }
+
+      termbox.SetCell(j+5, i+1, char, termbox.ColorDefault, termbox.ColorDefault)
+    }
+
+    // Show the sizes right next to the printed matches
+    for index, char := range bytes {
+      termbox.SetCell(match_size_startpos + index, i+1, char, LightGray | termbox.AttrBold, termbox.ColorDefault)
     }
     
     // Draw the matches to the screen
-    if cursor.select_mode && cursor.select_index == i {
+    if glob.select_mode && glob.select_index == i {
       for j, char := range str {
-        termbox.SetCell(j+4, i+1, char, termbox.ColorBlack, termbox.ColorWhite)
+        termbox.SetCell(j+5, i+1, char, termbox.ColorBlack, LightGray)
       }
+
+      for j := len(str); j < width/2; j++ {
+        termbox.SetCell(j+5, i+1, ' ', termbox.ColorDefault, LightGray)
+      } 
     }
-    
   }
 }
 
 // Draw the Search field
-func draw_text(cursor *Cursor) {
+func draw_text(glob *Global) {
   width, height := termbox.Size();
 
   cwd, err := os.Getwd()
@@ -109,36 +125,32 @@ func draw_text(cursor *Cursor) {
   }
   
   for i := 0; i < width; i++ {
-    termbox.SetCell(i, height-2, ' ', termbox.ColorDefault, termbox.ColorWhite)
+    termbox.SetCell(i, height-2, ' ', termbox.ColorDefault, LightGray)
   }
 
   for i, char := range cwd {
-    termbox.SetCell(i+1, height-2, char,termbox.ColorBlack | termbox.AttrBold, termbox.ColorWhite)
+    termbox.SetCell(i+1, height-2, char, termbox.ColorBlack | termbox.AttrBold, LightGray)
   }
 
-  if cursor.select_mode {
+  if glob.select_mode {
     return
   }
-
-  termbox.SetCell(1, height-1, '_', termbox.ColorDefault | termbox.AttrBold, termbox.ColorDefault); 
-  
-  // Draw underline
-  /*for i := 0; i < 100; i++ {
-    termbox.SetCell(i, 1, '━', termbox.ColorDefault, termbox.ColorDefault | termbox.AttrUnderline)
-  }*/
+ 
+  termbox.SetCell(1, height-1, '_', termbox.ColorDefault | termbox.AttrBold, termbox.ColorDefault);  
 
   // Draw the text from the cursor struct
-  for i, char := range cursor.text {
+  for i, char := range glob.text {
     termbox.SetCell(i+1, height-1, char, termbox.ColorDefault, termbox.ColorDefault);
     termbox.SetCell(i+2, height-1, '_', termbox.ColorDefault, termbox.ColorDefault);
   }
 }
 
 // Find subdirs with name matching input base path
-func find_subdirs(entrypoints []string, query string, depth int) []string {
+func find_subdirs(glob *Global, entrypoints []string, query string, depth int) []string {
 	var results []string
-  _, height := termbox.Size()
+  width, height := termbox.Size()
 
+  glob.match_size = glob.match_size[:0]
 	for _, root := range entrypoints {
 		filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
       if len(results) > height - 5 {
@@ -155,8 +167,13 @@ func find_subdirs(entrypoints []string, query string, depth int) []string {
 
 			if info.IsDir() {
 				if (depth == -1 && currentDepth >= 1) || currentDepth <= depth {
-					if strings.Contains(filepath.Base(path), query) {
+					if strings.Contains(filepath.Base(path), query) && len(path) < width/2-1 {
 						results = append(results, path) 
+
+            fileInfo, _ := os.Stat(path)
+
+            fileSize := fileInfo.Size()
+            glob.match_size = append(glob.match_size, fileSize)
           }
 				} else {
 					return filepath.SkipDir
@@ -179,7 +196,7 @@ func main() {
 
   defer termbox.Close()
 
-  cursor := &Cursor {
+  glob := &Global {
     x: 3, 
     text: "",
     select_mode: false,
@@ -187,19 +204,23 @@ func main() {
 
   entry_points := []string { "/home" }
 
+  termbox.SetOutputMode(termbox.Output256)
+
   // Main loop
   for {
     termbox.Clear(termbox.ColorDefault, termbox.ColorDefault)
 
-    cursor.matches = find_subdirs(entry_points, cursor.text, 6)
+    if !glob.select_mode {
+      glob.matches = find_subdirs(glob, entry_points, glob.text, 5)
+    }
     
-    draw_text(cursor)
-    draw_matches(cursor, false)
+    draw_matches(glob, false)
+    draw_text(glob)
     
     termbox.Flush()
   
     event := termbox.PollEvent()
-    input_mgr(cursor, event)
+    input_mgr(glob, event)
   }
 }
 
